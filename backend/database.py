@@ -22,6 +22,17 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Bảng ghi lại lịch sử Retrain
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS retrain_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trigger TEXT,
+            status TEXT,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
     print("✅ Database SQLite đã khởi tạo thành công.")
@@ -43,6 +54,27 @@ def get_feedbacks():
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+def count_wrong_feedbacks():
+    """Đếm số feedback báo sai cụm (chưa được dùng để retrain)."""
+    if not os.path.exists(DB_PATH):
+        return 0
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM feedbacks WHERE correct = 0")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def insert_retrain_log(trigger: str, status: str, note: str = ""):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO retrain_logs (trigger, status, note) VALUES (?, ?, ?)",
+        (trigger, status, note)
+    )
+    conn.commit()
+    conn.close()
 
 if __name__ == "__main__":
     init_db()

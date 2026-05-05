@@ -53,7 +53,8 @@ with st.sidebar:
             st.warning("Chọn file trước!")
 
     st.divider()
-    st.caption("MLOps Retraining: **02:00 AM** hàng đêm")
+    st.caption("MLOps Retrain: **02:00 AM** định kỳ")
+    st.caption("Auto-retrain khi óð **feedback sai cụm** (ngưỡng: 10)")
     st.caption("Model: **K-Means (k=3)** + Cosine CF")
 
 # ── Helper: load data ──────────────────────────────────────────────────────────
@@ -265,31 +266,104 @@ with tab3:
 
     with sub2:
         st.markdown("""
-        > **Cơ chế**: Khai thác các luật kết hợp dạng **A → B** từ lịch sử giao dịch (FP-Growth).
-        > Nếu khách đang xem sản phẩm A, hệ thống gợi ý sản phẩm B thường được mua kèm theo.
+        > **Cơ chế**: Khai thác 12,201 luật kết hợp dạng **{A, B, C} → {D, E}** từ lịch sử giao dịch (FP-Growth).
+        > Quản lý chọn **một hoặc nhiều sản phẩm** ỗ giỏ hàng, hệ thống tỏ ng hợp các luật có liên quan
+        > và gợi ý sản phẩm phù hợp nhất (xếp hạng theo **Lift Score**).
         """)
-        product_input = st.text_input(
-            "Nhập tên sản phẩm (UPPERCASE, chính xác)",
-            value="WHITE HANGING HEART T-LIGHT HOLDER", key="apriori_input",
-            help="Tên sản phẩm phải khớp chính xác với dữ liệu giao dịch.")
-        if st.button("🔍 Tìm sản phẩm mua kèm", use_container_width=True, key="btn_apriori"):
-            with st.spinner("Đang tra cứu luật kết hợp..."):
-                try:
-                    res = requests.get(f"{API_URL}/recommend_apriori", params={"product": product_input})
-                    data = res.json()
-                    if "error" in data:
-                        st.error(f"❌ {data['error']}")
-                    else:
-                        recs = data.get("recommendations", [])
-                        if not recs:
-                            st.warning("Không tìm thấy luật mua kèm.\n\n**Lý do có thể:**\n- Sản phẩm chưa đủ phổ biến (< 0.5% đơn hàng)\n- Tên không khớp chính xác\n- Chưa chạy FP-Growth (train_apriori)")
+
+        # ── Tải danh sách sản phẩm (cache 10 phút) ──────────────────────────
+        @st.cache_data(ttl=600)
+        def load_product_list():
+            if os.path.exists("clean_data.csv"):
+                df_prod = pd.read_csv("clean_data.csv", usecols=["Description"])
+                return sorted(df_prod["Description"].dropna().unique().tolist())
+            return []
+
+        all_products = load_product_list()
+
+        col_select, col_btn = st.columns([4, 1])
+        with col_select:
+            if all_products:
+                selected_products = st.multiselect(
+                    label="🛒 Chọn sản phẩm trong giỏ hàng (có thể chọn nhiều):",
+                    options=all_products,
+                    placeholder="Bắt đầu gõ tên sản phẩm...",
+                    key="basket_products"
+                )
+            else:
+                # Fallback: nhập thủ công nếu chưa có clean_data.csv
+                raw_input = st.text_area(
+                    "Nhập tên sản phẩm (mỗi dòng 1 sản phẩm, viết HOA):",
+                    value="WHITE HANGING HEART T-LIGHT HOLDER\nREGENCY CAKESTAND 3 TIER",
+                    key="basket_products_raw"
+                )
+                selected_products = [p.strip() for p in raw_input.splitlines() if p.strip()]
+        with col_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+            top_n = st.number_input("Độ dài kết quả", min_value=1, max_value=20, value=5, key="basket_top_n")
+
+        search_btn = st.button("🔍 Tìm sản phẩm mua kèm", use_container_width=True, key="btn_basket", type="primary")
+
+        if search_btn:
+            if not selected_products:
+                st.warning("⚠️ Vui lòng chọn ít nhất 1 sản phẩm.")
+            else:
+                with st.spinner(f"Trị ng lợc {len(selected_products)} sản phẩm qua 12,201 luật kết hợp..."):
+                    try:
+                        res = requests.post(
+                            f"{API_URL}/recommend_apriori_basket",
+                            json={"products": selected_products, "top_n": int(top_n)}
+                        )
+                        data = res.json()
+
+                        if "error" in data:
+                            st.error(f"❌ {data['error']}")
                         else:
-                            st.success(f"Khách mua **{product_input}** thường mua thêm:")
-                            for i, item in enumerate(recs, 1):
-                                st.markdown(f"""
-                                <div style="background:#1e293b;border-radius:8px;padding:12px 16px;margin-bottom:8px;">
-                                    <span style="color:#6366f1;font-weight:700;">#{i}</span>
-                                    <span style="color:#f1f5f9;margin-left:12px;font-weight:600;">{item}</span>
-                                </div>""", unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(str(e))
+                            recs = data.get("recommendations", [])
+                            total_matched = data.get("total_rules_matched", 0)
+
+                            # Hiển thị giỏ hàng đầu vào
+                            st.markdown("**🛒 Giỏ hàng đầu vào:**")
+                            basket_html = " ".join(
+                                f'<span class="cluster-badge" style="background:#1e293b;color:#6366f1;border:1px solid #6366f1;">{p}</span>'
+                                for p in selected_products
+                            )
+                            st.markdown(basket_html, unsafe_allow_html=True)
+
+                            st.markdown(f"""
+                            <div style="background:#1e293b18;border:1px solid #334155;border-radius:10px;
+                                        padding:12px 16px;margin:12px 0;color:#94a3b8;font-size:13px;">
+                                📊 Tổng số luật kết hợp khớp: <b style="color:#f1f5f9;">{total_matched}</b>
+                                &nbsp;&nbsp;│&nbsp;&nbsp;
+                                Ố giỏ hàng <b style="color:#f1f5f9;">{len(selected_products)}</b> sản phẩm
+                            </div>""", unsafe_allow_html=True)
+
+                            if not recs:
+                                st.warning("⚠️ Không có gợi ý nào phù hợp với giỏ hàng này.")
+                            else:
+                                st.markdown("**📦 Sản phẩm gợi ý mua kèm (sắp xếp theo Lift Score tổng hợp):**")
+                                max_score = recs[0]["lift_score"] if recs else 1
+                                for item in recs:
+                                    bar_pct = int(item["lift_score"] / max_score * 100)
+                                    st.markdown(f"""
+                                    <div style="background:#1e293b;border-radius:8px;padding:12px 16px;margin-bottom:8px;">
+                                        <div style="display:flex;align-items:center;gap:16px;">
+                                            <span style="color:#6366f1;font-weight:700;font-size:18px;min-width:28px;">
+                                                #{item['rank']}
+                                            </span>
+                                            <div style="flex:1;">
+                                                <div style="color:#f1f5f9;font-weight:600;margin-bottom:6px;">
+                                                    {item['product']}
+                                                </div>
+                                                <div style="background:#334155;border-radius:4px;height:6px;">
+                                                    <div style="background:#6366f1;width:{bar_pct}%;height:6px;border-radius:4px;"></div>
+                                                </div>
+                                            </div>
+                                            <span style="color:#64748b;font-size:12px;white-space:nowrap;">
+                                                Lift: {item['lift_score']:.2f}
+                                            </span>
+                                        </div>
+                                    </div>""", unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Lỗi kết nối API: {e}")
+
