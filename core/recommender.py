@@ -151,7 +151,13 @@ def train_apriori(min_support=0.01, min_confidence=0.1):
     basket_sets = basket.map(encode_units).astype(bool)
     
     print("⏳ Đang chạy thuật toán FP-Growth với min_support=0.5%...")
+    # ── FIX: Strip khoảng trắng thừa trong tên sản phẩm trước khi build basket
+    basket_sets.columns = [c.strip() for c in basket_sets.columns]
     frequent_itemsets = fpgrowth(basket_sets, min_support=0.005, use_colnames=True)
+    # Chuẩn hóa: strip tất cả tên sản phẩm trong itemsets
+    frequent_itemsets["itemsets"] = frequent_itemsets["itemsets"].apply(
+        lambda s: frozenset(x.strip() for x in s)
+    )
     
     rules = association_rules(frequent_itemsets, metric="confidence", min_threshold=min_confidence)
     
@@ -163,36 +169,46 @@ def train_apriori(min_support=0.01, min_confidence=0.1):
     joblib.dump(rules, RULES_PATH)
     print("✅ Đã lưu tập luật Apriori thành công!")
 
-def get_apriori_recommendations(product_name, top_n=3):
+def get_apriori_recommendations(product_name, top_n=5):
     """
-    Lấy gợi ý sản phẩm mua kèm dựa trên Apriori
+    Lấy gợi ý sản phẩm mua kèm dựa trên Apriori.
+    Tự động xử lý khoảng trắng thừa (trailing/leading space) để tìm chính xác hơn.
     """
     if not os.path.exists(RULES_PATH):
         return {"error": "Chưa có mô hình Apriori. Vui lòng đợi hệ thống huấn luyện ban đêm hoặc chạy thủ công train_apriori()."}
         
     rules = joblib.load(RULES_PATH)
     
-    # Tìm các luật mà product_name nằm ở vế trái (antecedents)
+    # FIX: So sánh sau khi strip cả 2 phía → khắc phục lỗi trailing space
+    product_clean = product_name.strip().upper()
+
     def check_item_in_antecedents(antecedents_set):
-        return product_name in antecedents_set
+        return any(x.strip().upper() == product_clean for x in antecedents_set)
         
     matching_rules = rules[rules['antecedents'].apply(check_item_in_antecedents)]
     
     if matching_rules.empty:
-        return {"product": product_name, "recommendations": []}
+        return {
+            "product": product_name,
+            "recommendations": [],
+            "note": f"Không tìm thấy luật kết hợp nào cho '{product_name}'. "
+                    "Sản phẩm có thể chưa đủ phổ biến (< 0.5% đơn hàng)."
+        }
         
-    # Lấy các mặt hàng ở vế phải (consequents)
-    consequents_list = matching_rules['consequents'].apply(list).tolist()
-    
-    # Làm phẳng list
+    # Sắp xếp theo lift giảm dần để lấy gợi ý tốt nhất trước
+    matching_rules = matching_rules.sort_values("lift", ascending=False)
+
+    # Lấy các mặt hàng ở vế phải (consequents), đã strip
     flat_list = []
-    for itemset in consequents_list:
-        for item in itemset:
-            if item not in flat_list:
-                flat_list.append(item)
+    for consequents in matching_rules['consequents']:
+        for item in consequents:
+            item_clean = item.strip()
+            if item_clean not in flat_list:
+                flat_list.append(item_clean)
                 
     return {
         "product": product_name,
+        "total_rules_matched": len(matching_rules),
         "recommendations": flat_list[:top_n]
     }
 
