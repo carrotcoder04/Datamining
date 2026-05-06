@@ -148,7 +148,7 @@ def train_apriori(min_support=0.01, min_confidence=0.1):
     def encode_units(x):
         return bool(x >= 1)
     
-    basket_sets = basket.applymap(encode_units).astype(bool)
+    basket_sets = basket.map(encode_units).astype(bool)
     
     print("⏳ Đang chạy thuật toán FP-Growth với min_support=0.5%...")
     frequent_itemsets = fpgrowth(basket_sets, min_support=0.005, use_colnames=True)
